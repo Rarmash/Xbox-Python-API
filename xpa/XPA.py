@@ -61,6 +61,12 @@ class XPA:
             raise XboxApiError("An error occurred") from err
         return response
 
+    def _make_json_request(self, endpoint):
+        response = self._make_request(endpoint).json()
+        if isinstance(response, dict) and "content" in response and "code" in response:
+            return response["content"]
+        return response
+
     def _find_setting_by_id(self, settings, setting_id):
         """
         Find a setting by its id
@@ -76,6 +82,30 @@ class XPA:
             if setting['id'] == setting_id:
                 return setting['value']
         return None
+
+    def _get_list_item(self, response, key, *, index=0, error_message="Unexpected API response"):
+        items = response.get(key)
+        if not isinstance(items, list) or len(items) <= index:
+            raise XboxApiNotFoundError(error_message)
+        return items[index]
+
+    def _get_profile_settings(self, response, *, error_message="Profile not found"):
+        profile_user = self._get_list_item(response, "profileUsers", error_message=error_message)
+        settings = profile_user.get("settings")
+        if not isinstance(settings, list):
+            raise XboxApiError("Unexpected API response: missing profile settings")
+        return settings
+
+    def _get_people_item(self, response, *, index=0, error_message="User not found"):
+        person = self._get_list_item(response, "people", index=index, error_message=error_message)
+        if not isinstance(person, dict):
+            raise XboxApiError("Unexpected API response: invalid people entry")
+        return person
+
+    def _get_required_value(self, payload, key, *, error_message="Unexpected API response"):
+        if key not in payload:
+            raise XboxApiError(f"{error_message}: missing '{key}'")
+        return payload[key]
 
     def get_account_info_xuid(self, xuid: str) -> ACCOUNT_INFO_XUID:
         """
@@ -99,8 +129,8 @@ class XPA:
             - Location: str
         """
         endpoint = self.url.account_xuid_url(xuid)
-        response = self._make_request(endpoint).json()
-        user_data = response['profileUsers'][0]['settings']
+        response = self._make_json_request(endpoint)
+        user_data = self._get_profile_settings(response, error_message="Profile not found for the provided XUID")
         account_info = ACCOUNT_INFO_XUID(
             GameDisplayPicRaw=self._find_setting_by_id(user_data, 'GameDisplayPicRaw'),
             Gamerscore=self._find_setting_by_id(user_data, 'Gamerscore'),
@@ -166,11 +196,8 @@ class XPA:
             - preferredPlatforms: dict
         """
         endpoint = self.url.search_gamertag_url(gamertag)
-        response = self._make_request(endpoint).json()
-        try:
-            user_data = response['people'][0]
-        except IndexError:
-            raise XboxApiNotFoundError("User not found")
+        response = self._make_json_request(endpoint)
+        user_data = self._get_people_item(response, error_message="User not found")
         account_info = ACCOUNT_INFO_GAMERTAG(
             xuid=user_data["xuid"],
             displayName=user_data["displayName"],
@@ -232,7 +259,9 @@ class XPA:
             - last_seen_timestamp: str
         """
         endpoint = self.url.xuid_presence_url(xuid)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
+        if not isinstance(response, list) or not response:
+            raise XboxApiNotFoundError("Presence not found for the provided XUID")
         user_data = response[0]
         presence = XUID_PRESENCE(
             state=user_data["state"],
@@ -251,7 +280,7 @@ class XPA:
             list: user achievements.
         """
         endpoint = self.url.achievements_xuid_url(xuid)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         user_data = response['titles']
         return user_data
 
@@ -267,7 +296,7 @@ class XPA:
             list: user achievements for the specified title.
         """
         endpoint = self.url.title_achievements_xuid_url(xuid, titleId)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         user_data = response["achievements"]
         return user_data
 
@@ -283,7 +312,7 @@ class XPA:
             list: user achievements for the specified title.
         """
         endpoint = self.url.title360_achievements_xuid_url(xuid, titleId)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         user_data = response["achievements"]
         return user_data
 
@@ -299,7 +328,7 @@ class XPA:
             list: user achievements for the specified title.
         """
         endpoint = self.url.player360_achievements_xuid_url(xuid, titleId)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         user_data = response["achievements"]
         return user_data
 
@@ -459,8 +488,8 @@ class XPA:
             - preferredPlatforms: dict
         """
         endpoint = self.url.friends_xuid_url(xuid)
-        response = self._make_request(endpoint).json()
-        friend_data = response['people'][0]
+        response = self._make_json_request(endpoint)
+        friend_data = self._get_people_item(response, error_message="Friends list is empty")
         friend_details = ACCOUNT_INFO_GAMERTAG(
             xuid=friend_data["xuid"],
             displayName=friend_data["displayName"],
@@ -528,8 +557,8 @@ class XPA:
             - ShowUserAsAvatar: str
         """
         endpoint = self.url.search_friend_url(gamertag)
-        response = self._make_request(endpoint).json()
-        friends_data = response["profileUsers"][0]["settings"]
+        response = self._make_json_request(endpoint)
+        friends_data = self._get_profile_settings(response, error_message="Friend not found")
         friend_data = {item['id']: item['value'] for item in friends_data}
         friend_details = FRIEND_INFO_GAMERTAG(
             GameDisplayPicRaw=friend_data["GameDisplayPicRaw"],
@@ -554,7 +583,7 @@ class XPA:
             list: gamepass games.
         """
         endpoint = self.url.gamepass_all_url()
-        response = self._make_request(endpoint).json()[1:]
+        response = self._make_json_request(endpoint)[1:]
         id_list = [item['id'] for item in response]
         return id_list
 
@@ -566,7 +595,7 @@ class XPA:
             list: Game Pass PC games.
         """
         endpoint = self.url.gamepass_pc_url()
-        response = self._make_request(endpoint).json()[1:]
+        response = self._make_json_request(endpoint)[1:]
         id_list = [item['id'] for item in response]
         return id_list
 
@@ -578,7 +607,7 @@ class XPA:
             list: EA Play games.
         """
         endpoint = self.url.gamepass_eaplay_url()
-        response = self._make_request(endpoint).json()[1:]
+        response = self._make_json_request(endpoint)[1:]
         id_list = [item['id'] for item in response]
         return id_list
 
@@ -590,7 +619,7 @@ class XPA:
             list: Game Pass games that don't require a controller.
         """
         endpoint = self.url.gamepass_nocontroller_url()
-        response = self._make_request(endpoint).json()[1:]
+        response = self._make_json_request(endpoint)[1:]
         id_list = [item['id'] for item in response]
         return id_list
 
@@ -602,7 +631,7 @@ class XPA:
             list: new marketplace games.
         """
         endpoint = self.url.marketplace_new_url()
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         games_list = response["Products"]
         return games_list
 
@@ -614,7 +643,7 @@ class XPA:
             list: top paid marketplace games.
         """
         endpoint = self.url.marketplace_toppaid_url()
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         games_list = response["Products"]
         return games_list
 
@@ -626,7 +655,7 @@ class XPA:
             list: best rated marketplace games.
         """
         endpoint = self.url.marketplace_bestrated_url()
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         games_list = response["Products"]
         return games_list
 
@@ -638,7 +667,7 @@ class XPA:
             list: coming soon marketplace games.
         """
         endpoint = self.url.marketplace_comingsoon_url()
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         games_list = response["Products"]
         return games_list
 
@@ -650,7 +679,7 @@ class XPA:
             list: deals marketplace games.
         """
         endpoint = self.url.marketplace_deals_url()
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         games_list = response["Products"]
         return games_list
 
@@ -662,7 +691,7 @@ class XPA:
             list: top free marketplace games.
         """
         endpoint = self.url.marketplace_topfree_url()
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         games_list = response["Products"]
         return games_list
 
@@ -674,7 +703,7 @@ class XPA:
             list: most played marketplace games.
         """
         endpoint = self.url.marketplace_mostplayed_url()
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         games_list = response["Products"]
         return games_list
 
@@ -689,7 +718,7 @@ class XPA:
             list: marketplace games.
         """
         endpoint = self.url.marketplace_searchgame_url(titleId=titleId)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         games_list = response["Products"]
         return games_list
 
@@ -741,8 +770,8 @@ class XPA:
             - avatar: str
         """
         endpoint = self.url.player_summary_url(xuid=xuid)
-        response = self._make_request(endpoint).json()
-        user_data = response['people'][0]
+        response = self._make_json_request(endpoint)
+        user_data = self._get_people_item(response, error_message="Player summary not found")
         player_summary = PLAYER_SUMMARY(
             xuid=user_data["xuid"],
             isFavorite=user_data["isFavorite"],
@@ -794,7 +823,7 @@ class XPA:
             list: player title history.
         """
         endpoint = self.url.player_titleHistory_url(xuid=xuid)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         titie_history = response['titles']
         return titie_history
 
@@ -809,7 +838,7 @@ class XPA:
             dict: session details.
         """
         endpoint = self.url.session_details_url(sessionName=sessionName)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         session_details = response
         return session_details
 
@@ -824,7 +853,7 @@ class XPA:
             dict: group summary.
         """
         endpoint = self.url.group_summary_url(groupId=groupId)
-        response = self._make_request(endpoint).json()
+        response = self._make_json_request(endpoint)
         group_summary = response
         return group_summary
 
